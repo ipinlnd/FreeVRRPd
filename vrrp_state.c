@@ -39,19 +39,14 @@
 #include "vrrp_ah.h"
 #endif
 
-char 
-vrrp_state_initialize(struct vrrp_vr * vr)
+void
+vrrp_state_set_init(struct vrrp_vr *vr)
 {
-	if ((vr->priority == 255) && (! vr->fault)) {
-		if (vrrp_state_set_master(vr) == -1)
-			return -1;
-	} else if (vrrp_state_set_backup(vr) == -1)
-		return -1;
-
-	return 0;
+	syslog(LOG_NOTICE, "server state vrid %d: init", vr->vr_id);
+	vr->state = VRRP_STATE_INITIALIZE;
 }
 
-char 
+char
 vrrp_state_set_master(struct vrrp_vr * vr)
 {
 	int returnCode = 0;
@@ -102,7 +97,7 @@ vrrp_state_set_master(struct vrrp_vr * vr)
 	return 0;
 }
 
-char 
+char
 vrrp_state_set_backup(struct vrrp_vr * vr)
 {
 	int returnCode = 0;
@@ -149,7 +144,7 @@ vrrp_state_set_backup(struct vrrp_vr * vr)
 	return 0;
 }
 
-char 
+char
 vrrp_state_select(struct vrrp_vr * vr, struct timeval * interval)
 {
 	int             coderet;
@@ -162,8 +157,30 @@ vrrp_state_select(struct vrrp_vr * vr, struct timeval * interval)
 	return coderet;
 }
 
+char
+vrrp_state_initialize(struct vrrp_vr * vr)
+{
+	for (;;) {
+		if (vr->fault || (vr->vr_if->alive != 1)) {
+			sleep(1);
+			continue;
+		}
+
+		if (vr->priority == 255) {
+			if (!vrrp_state_set_master(vr) == -1)
+				return -1;
+			return 0;
+		}
+		else {
+			if (!vrrp_state_set_backup(vr) == -1)
+				return -1;
+			return 0;
+		}
+	}
+}
+
 /* Operation a effectuer durant l'etat master */
-char 
+char
 vrrp_state_master(struct vrrp_vr * vr)
 {
 	int             coderet;
@@ -183,6 +200,11 @@ vrrp_state_master(struct vrrp_vr * vr)
 		if (vrrp_misc_calcul_tmrelease(&vr->tm.adv_tm, &interval) == -1)
 			return -1;
 		coderet = vrrp_state_select(vr, &interval);
+
+		if (vr->fault || (vr->vr_if->alive != 1)) {
+			vrrp_state_set_init(vr);
+			return 0;
+		}
 		if (coderet > 0) {
 			len = sizeof(struct sockaddr_in);
 			packetSize = recvfrom(vr->sd, packet, sizeof(packet), 0, (struct sockaddr *)&saddr, &len);
@@ -200,14 +222,14 @@ vrrp_state_master(struct vrrp_vr * vr)
 					return -1;
 				continue;
 			}
-			if (vrrp_state_check_priority(vrrph, vr, ipp->ip_src) || (vr->fault) || (vr->vr_if->alive != 1)) {
+			if (vrrp_state_check_priority(vrrph, vr, ipp->ip_src)) {
 				if (vrrp_state_set_backup(vr) == -1)
 					return -1;
 			}
 			return 0;
 		}
 		if (coderet == 0) {
-			if ((vr->vr_if->alive != 1) || (vr->fault)) {
+			if ((vr->vr_if->alive != 1)) {
 				if (vrrp_state_set_backup(vr) == -1)
 					return -1;
 				return 0;
@@ -227,7 +249,7 @@ vrrp_state_master(struct vrrp_vr * vr)
 	return 0;
 }
 
-char 
+char
 vrrp_state_backup(struct vrrp_vr * vr)
 {
 	int             coderet;
@@ -246,6 +268,11 @@ vrrp_state_backup(struct vrrp_vr * vr)
 		if (vrrp_misc_calcul_tmrelease(&vr->tm.master_down_tm, &interval) == -1)
 			return -1;
 		coderet = vrrp_state_select(vr, &interval);
+
+		if (vr->fault || (vr->vr_if->alive != 1) ) {
+			vrrp_state_set_init(vr);
+			return 0;
+		}
 		if (coderet > 0) {
 			len = sizeof(struct sockaddr_in);
 			packetSize = recvfrom(vr->sd, packet, sizeof(packet), 0, (struct sockaddr *)&saddr, &len);
@@ -269,7 +296,7 @@ vrrp_state_backup(struct vrrp_vr * vr)
 			syslog(LOG_ERR, "select on readfds fd_set failed: %s", strerror(errno));
 			return -1;
 		}
-		if ((! coderet) && (vr->vr_if->alive == 1) && (! vr->fault)) {
+		if ((! coderet)) {
 			if (! vrrp_state_set_master(vr))
 				return 0;
 		}
@@ -282,7 +309,7 @@ vrrp_state_backup(struct vrrp_vr * vr)
 	return 0;
 }
 
-char 
+char
 vrrp_state_check_priority(struct vrrp_hdr * vrrph, struct vrrp_vr * vr, struct in_addr addr)
 {
 	if (vrrph->priority > vr->priority)
